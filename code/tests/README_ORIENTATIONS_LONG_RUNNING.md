@@ -75,7 +75,7 @@ inference over all 4 orientations daily. Manual dispatch is also available.
 Copy the repo (or clone), install dependencies, then run the same commands:
 
 ```bash
-ssh user@remote-server "cd /path/to/quantum-predecoder && ORIENTATIONS_LONG_TASK=train bash code/scripts/run_orientations_long.sh"
+ssh user@remote-server "cd /path/to/Ising-Decoding && ORIENTATIONS_LONG_TASK=train bash code/scripts/run_orientations_long.sh"
 ```
 
 ## Orientation mapping
