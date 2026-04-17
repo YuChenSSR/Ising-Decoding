@@ -16,6 +16,8 @@ os.makedirs(FIG_DIR, exist_ok=True)
 plt.rcParams.update({
     'font.size': 9,
     'font.family': 'serif',
+    'pdf.fonttype': 42,
+    'ps.fonttype': 42,
     'figure.figsize': (3.5, 2.5),
     'figure.dpi': 300,
     'axes.grid': True,
@@ -76,7 +78,7 @@ def fig1_backend_comparison():
     if not labels:
         return
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 2.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.6, 2.25))
     x = np.arange(len(labels))
     w = 0.5
 
@@ -85,16 +87,16 @@ def fig1_backend_comparison():
     ax1.bar(x, ler_vals, w, color=colors[:len(labels)], edgecolor='black', linewidth=0.5)
     ax1.set_ylabel('Logical Error Rate')
     ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, fontsize=8)
-    ax1.set_title('(a) LER by Backend', fontsize=9)
+    ax1.set_xticklabels(labels, fontsize=7)
+    ax1.set_title('(a) LER by Backend', fontsize=8)
     ax1.ticklabel_format(axis='y', style='sci', scilimits=(-3, -3))
 
     # Right: PyMatching speedup
     ax2.bar(x, speedup_vals, w, color=colors[:len(labels)], edgecolor='black', linewidth=0.5)
     ax2.set_ylabel('PyMatching Speedup (×)')
     ax2.set_xticks(x)
-    ax2.set_xticklabels(labels, fontsize=8)
-    ax2.set_title('(b) PyMatching Speedup', fontsize=9)
+    ax2.set_xticklabels(labels, fontsize=7)
+    ax2.set_title('(b) PyMatching Speedup', fontsize=8)
     ax2.axhline(y=1.0, color='gray', linestyle='--', linewidth=0.5)
 
     plt.tight_layout()
@@ -110,7 +112,7 @@ def fig2_quantization_tradeoff():
     if not data:
         return
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.8))
+    fig, ax = plt.subplots(figsize=(3.15, 2.45))
 
     markers = {'model1': 'o', 'model4': 's'}
     colors_map = {'fp32': '#2196F3', 'trt_fp16': '#4CAF50', 'trt_int8': '#F44336'}
@@ -129,15 +131,16 @@ def fig2_quantization_tradeoff():
         marker = markers[mid]
         color = colors_map[quant]
         label = f"{mid.upper()} {label_map[quant]}"
-        ax.scatter(latency, ler, marker=marker, c=color, s=60,
+        ax.scatter(latency, ler, marker=marker, c=color, s=48,
                    edgecolors='black', linewidth=0.5, label=label, zorder=3)
 
     ax.set_xlabel('PyMatching Latency (µs/round)')
     ax.set_ylabel('Logical Error Rate')
-    ax.set_title('Quantization: Accuracy vs Latency')
+    ax.set_title('Quantization: Accuracy vs Latency', fontsize=8)
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    ax.legend(by_label.values(), by_label.keys(), fontsize=6, loc='upper right')
+    ax.legend(by_label.values(), by_label.keys(), fontsize=5.5, loc='upper right',
+              handletextpad=0.3, borderpad=0.25, labelspacing=0.2)
     plt.tight_layout()
     plt.savefig(os.path.join(FIG_DIR, "fig2_quantization_tradeoff.pdf"), bbox_inches='tight')
     plt.savefig(os.path.join(FIG_DIR, "fig2_quantization_tradeoff.png"), bbox_inches='tight')
@@ -167,15 +170,15 @@ def fig3_distance_scaling():
     if not distances:
         return
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.8))
-    ax.semilogy(distances, baseline_lat, 'o-', color='#F44336', label='Baseline (PyMatching only)', markersize=5)
-    ax.semilogy(distances, predecoder_lat, 's-', color='#4CAF50', label='After Pre-decoder', markersize=5)
+    fig, ax = plt.subplots(figsize=(3.15, 2.45))
+    ax.semilogy(distances, baseline_lat, 'o-', color='#F44336', label='Baseline (PyMatching only)', markersize=4)
+    ax.semilogy(distances, predecoder_lat, 's-', color='#4CAF50', label='After Pre-decoder', markersize=4)
     ax.axhline(y=1.0, color='gray', linestyle='--', linewidth=1.0, label='1 µs/round budget')
     ax.set_xlabel('Code Distance (d)')
     ax.set_ylabel('PyMatching Latency (µs/round)')
-    ax.set_title('Decoding Latency vs Code Distance')
+    ax.set_title('Decoding Latency vs Code Distance', fontsize=8)
     ax.set_xticks(distances)
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=5.5, handletextpad=0.3, borderpad=0.25, labelspacing=0.2)
     plt.tight_layout()
     plt.savefig(os.path.join(FIG_DIR, "fig3_distance_scaling.pdf"), bbox_inches='tight')
     plt.savefig(os.path.join(FIG_DIR, "fig3_distance_scaling.png"), bbox_inches='tight')
@@ -218,11 +221,11 @@ def fig4_realtime_feasibility():
     if not distances:
         return
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.8))
+    fig, ax = plt.subplots(figsize=(3.15, 2.45))
 
     # Baseline
     bl_vals = [by_d[d].get('baseline', np.nan) for d in distances]
-    ax.semilogy(distances, bl_vals, 'x--', color='#9E9E9E', label='PyMatching only', markersize=6)
+    ax.semilogy(distances, bl_vals, 'x--', color='#9E9E9E', label='PyMatching only', markersize=5)
 
     # FP16: NN + PM
     fp16_total = []
@@ -230,7 +233,7 @@ def fig4_realtime_feasibility():
         nn = by_d[d].get('fp16_nn_us', 0)
         pm = by_d[d].get('fp16_pm', np.nan)
         fp16_total.append(nn + pm)
-    ax.semilogy(distances, fp16_total, 'o-', color='#4CAF50', label='TRT-FP16 (NN+PM)', markersize=5)
+    ax.semilogy(distances, fp16_total, 'o-', color='#4CAF50', label='TRT-FP16 (NN+PM)', markersize=4)
 
     # INT8: NN + PM
     int8_total = []
@@ -242,14 +245,15 @@ def fig4_realtime_feasibility():
             int8_total.append(nn + pm)
             int8_d.append(d)
     if int8_d:
-        ax.semilogy(int8_d, int8_total, 's-', color='#F44336', label='TRT-INT8 (NN+PM)', markersize=5)
+        ax.semilogy(int8_d, int8_total, 's-', color='#F44336', label='TRT-INT8 (NN+PM)', markersize=4)
 
     ax.axhline(y=1.0, color='#FF9800', linestyle='--', linewidth=1.5, label='1 µs/round budget')
     ax.set_xlabel('Code Distance (d)')
     ax.set_ylabel('Total Decoding Latency (µs/round)')
-    ax.set_title('Real-Time Feasibility Analysis')
+    ax.set_title('Real-Time Feasibility Analysis', fontsize=8)
     ax.set_xticks(distances)
-    ax.legend(fontsize=6, loc='upper left')
+    ax.legend(fontsize=5.5, loc='upper left', handletextpad=0.3,
+              borderpad=0.25, labelspacing=0.2)
     plt.tight_layout()
     plt.savefig(os.path.join(FIG_DIR, "fig4_realtime_feasibility.pdf"), bbox_inches='tight')
     plt.savefig(os.path.join(FIG_DIR, "fig4_realtime_feasibility.png"), bbox_inches='tight')
