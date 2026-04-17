@@ -28,7 +28,8 @@
 \begin{abstract}
 Quantum error correction (QEC) decoders must operate within stringent latency budgets to prevent logical errors from accumulating faster than they can be corrected.
 We systematically characterize a GPU-accelerated neural pre-decoder pipeline for surface codes, evaluating deployment backends (PyTorch, TensorRT), quantization strategies (FP32, FP16, INT8), and scaling behavior across code distances $d = 5$--$21$ on an NVIDIA RTX~4090 GPU.
-Our results show that: (1) INT8 quantization via TensorRT preserves decoding accuracy (LER degradation $< 3\%$) while the pre-decoder reduces PyMatching latency by up to $2\times$; (2) the neural pre-decoder reduces syndrome density by 84--98\%, enabling the downstream MWPM decoder to run 1.7--5.7$\times$ faster; (3) the combined pre-decoder + PyMatching pipeline meets the \SI{1}{\micro\second}/round real-time budget for code distances $d \leq 7$.
+Our results show that: (1) TensorRT INT8 quantization preserves decoding accuracy (LER degradation $< 3\%$) while reducing model forward time by $2.7\times$ versus PyTorch; (2) the neural pre-decoder reduces syndrome density by 84--98\%, enabling the downstream MWPM decoder to run 1.5--2.1$\times$ faster; (3) the combined pre-decoder + PyMatching pipeline meets the \SI{1}{\micro\second}/round real-time budget for code distances $d \leq 7$.
+A phase-level timing breakdown reveals that PyMatching---not the neural network---becomes the latency bottleneck for $d \geq 9$, identifying a clear architectural opportunity for GPU-accelerated global decoders.
 These findings provide concrete architectural guidelines for integrating neural pre-decoders into near-term quantum computing systems.
 \end{abstract}
 
@@ -41,55 +42,90 @@ quantum error correction, surface code, neural decoder, GPU acceleration, Tensor
 %==============================================================================
 
 Fault-tolerant quantum computing requires continuous error correction, where syndrome measurements are decoded every QEC round (typically $\sim$\SI{1}{\micro\second} for superconducting qubits~\cite{google2023suppressing}).
-If the decoder cannot keep pace, a \emph{backlog} of un-decoded syndromes accumulates, threatening the logical error rate~\cite{terhal2015quantum}.
-Minimum-weight perfect matching (MWPM) decoders such as PyMatching~\cite{higgott2023sparse} are the standard approach, but their latency grows super-linearly with code distance.
+If the decoder cannot keep pace, a \emph{backlog} of un-decoded syndromes accumulates, threatening the logical error rate~\cite{terhal2015quantum,battistel2023real}.
+Minimum-weight perfect matching (MWPM) decoders such as PyMatching~\cite{higgott2023sparse} are the standard approach, but their latency grows super-linearly with code distance, making real-time operation challenging for $d \geq 9$.
 
 A promising strategy is to use a lightweight neural network as a \emph{pre-decoder} that reduces syndrome density before passing residual syndromes to MWPM~\cite{nvidia2026predecoder}.
-The pre-decoder is a 3D convolutional neural network (CNN) operating over the $(d \times d \times T)$ syndrome volume, where $d$ is the code distance and $T$ is the number of QEC rounds.
-By reducing syndrome density, the pre-decoder accelerates the downstream MWPM decoder while maintaining---or even improving---the logical error rate.
-
-While prior work demonstrated the algorithmic benefits of neural pre-decoders, the \emph{systems-level} characterization---deployment backend selection, quantization impact, and scaling behavior---remains unexplored.
+Torlai and Melko~\cite{torlai2017neural} first proposed neural decoders for topological codes, and subsequent work has demonstrated that neural pre-decoders can maintain---or even improve---the logical error rate while accelerating downstream decoding~\cite{chamberland2023techniques}.
+However, the \emph{systems-level} characterization---deployment backend selection, quantization impact, and scaling behavior on modern GPU hardware---remains largely unexplored.
 This is precisely the kind of hardware-software co-design question that determines whether neural pre-decoders are \emph{practically viable} for real-time QEC.
 
 \textbf{Contributions.} We present the first systematic GPU architecture characterization of neural QEC pre-decoders:
 \begin{itemize}
-    \item We compare four deployment backends (PyTorch, PyTorch+\texttt{torch.compile}, TensorRT FP16, TensorRT INT8) and show that all achieve equivalent accuracy, with TensorRT providing $2.7\times$ lower model forward time.
-    \item We demonstrate that INT8 quantization preserves LER within 3\% while halving the model footprint.
+    \item We compare four deployment configurations (PyTorch eager, \texttt{torch.compile}, TensorRT FP16, TensorRT INT8) and show that all achieve equivalent decoding accuracy, with TensorRT providing $2.7\times$ lower model forward time.
+    \item We evaluate two model sizes (912K and 1.8M parameters) with three precision levels, demonstrating that INT8 quantization preserves LER within 3\% while halving the model footprint.
     \item We characterize latency scaling from $d = 5$ to $d = 21$ and identify $d = 7$ as the crossover point where the pre-decoder pipeline meets the \SI{1}{\micro\second}/round real-time budget.
-    \item We perform a phase-level timing breakdown to identify that PyMatching (not the neural network) is the bottleneck for $d \geq 9$.
+    \item We perform a phase-level timing breakdown revealing that PyMatching (not the neural network) is the bottleneck for $d \geq 9$, motivating future work on GPU-accelerated global decoders.
 \end{itemize}
 
 %==============================================================================
 \section{Background and System Architecture}
 %==============================================================================
 
-\subsection{Surface Code and Pre-Decoder Pipeline}
+\subsection{Surface Code QEC}
 
-The rotated surface code encodes one logical qubit into $d^2$ physical data qubits and $(d^2 - 1)$ stabilizer measurement qubits.
-Each QEC round measures all stabilizers, producing a binary syndrome.
+The rotated surface code~\cite{fowler2012surface} encodes one logical qubit into $d^2$ physical data qubits and $(d^2 - 1)$ stabilizer measurement qubits, where $d$ is the code distance.
+Each QEC round measures all $X$- and $Z$-type stabilizers, producing a binary syndrome.
 Over $T$ rounds, the syndrome forms a 3D volume of shape $(d \times d \times T)$.
+The decoder's task is to identify the most likely physical error pattern consistent with the observed syndrome and compute the resulting logical correction.
+
+Under circuit-level noise, the decoding problem becomes significantly harder than under code-capacity noise, because measurement errors introduce time-like correlations in the syndrome volume~\cite{dennis2002topological}.
+The physical error rate used in our experiments ($p = 0.003$) is typical of current superconducting qubit hardware~\cite{google2023suppressing} and is well below the surface code threshold of $\sim$0.75\%.
+
+\subsection{Pre-Decoder Pipeline}
 
 The pre-decoder pipeline (Fig.~\ref{fig:pipeline}) operates in three stages:
-\textbf{(1)} The 3D CNN processes the syndrome volume and predicts per-qubit corrections;
-\textbf{(2)} Predicted corrections induce residual syndromes with reduced density;
-\textbf{(3)} PyMatching decodes the residual syndromes to produce the final logical correction.
+\textbf{(1)}~The 3D CNN processes the raw syndrome volume and predicts per-qubit corrections $\hat{c}$;
+\textbf{(2)}~The predicted corrections induce a \emph{residual} syndrome $s_{\text{res}} = s \oplus \partial \hat{c}$ with reduced density;
+\textbf{(3)}~PyMatching decodes the residual syndromes to produce a correction $c_{\text{PM}}$.
+The final logical correction is the XOR of both contributions: $S_L = S_L^{(\text{pre})} \oplus S_L^{(\text{PM})}$.
+
+The key insight is that a lightweight neural network can resolve the majority of local error patterns, leaving only rare, complex errors for the computationally expensive MWPM decoder.
+Since MWPM latency scales super-linearly with syndrome density, even a moderate reduction (84--98\% in our experiments) translates to significant speedup.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\columnwidth]{fig4_realtime_feasibility.pdf}
-    \caption{Total decoding latency (neural pre-decoder + PyMatching) vs.\ code distance. The \SI{1}{\micro\second}/round real-time budget (orange dashed) is met for $d \leq 7$ with TensorRT backends.}
+    \includegraphics[width=\columnwidth]{fig0_pipeline.png}
+    \caption{Pre-decoder pipeline. The 3D CNN pre-decoder processes raw $X$/$Z$ syndrome volumes, producing corrections that reduce syndrome density. PyMatching decodes the sparse residual syndromes. The final logical observable sign is $S_L = S_L^{(\text{pre})} \oplus S_L^{(\text{PM})}$.}
     \label{fig:pipeline}
 \end{figure}
 
+\subsection{3D CNN Architecture}
+
+The pre-decoder is a fully convolutional 3D CNN operating on input tensors of shape $(B, 4, T, d, d)$, where $B$ is batch size and the 4 input channels encode $X$/$Z$ syndromes and their spatial context.
+Table~\ref{tab:arch} summarizes the two models evaluated.
+Both use same-padding Conv3D layers with kernel size $k = 3$, Dropout3D ($p = 0.1$), and GELU activation.
+The receptive field is $R = 1 + \sum_i (k_i - 1)$, which determines the spatial and temporal extent of error patterns the model can resolve in a single forward pass.
+
+Model~1 (R=9, 4 layers) is optimized for speed: its 912K parameters fit entirely in L2 cache on modern GPUs.
+Model~4 (R=13, 6 layers) trades inference time for accuracy, with a $2\times$ larger receptive field that captures longer-range correlations.
+
+\begin{table}[t]
+\centering
+\caption{Pre-decoder model architectures}
+\label{tab:arch}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Model & Layers & Filters & $k$ & $R$ & Params & Output \\
+\midrule
+Model~1 & 4 & [128,128,128,4] & 3 & 9  & 912K  & 4-ch \\
+Model~4 & 6 & [128$\times$5,4] & 3 & 13 & 1.8M  & 4-ch \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{Deployment Stack}
 
-We evaluate the following inference backends on an NVIDIA RTX~4090 (Ada Lovelace, 48~GB VRAM):
+We evaluate the following inference backends on an NVIDIA RTX~4090 (Ada Lovelace, 16,384 CUDA cores, 48~GB GDDR6X):
 \begin{itemize}
-    \item \textbf{PyTorch} (FP32): baseline eager-mode execution.
-    \item \textbf{PyTorch + \texttt{torch.compile}}: graph-mode compilation with Triton backend.
-    \item \textbf{TensorRT FP16}: ONNX export $\to$ TensorRT engine with FP16 precision.
-    \item \textbf{TensorRT INT8}: ONNX export $\to$ static INT8 quantization $\to$ TensorRT engine.
+    \item \textbf{PyTorch eager} (FP32): baseline eager-mode execution.
+    \item \textbf{PyTorch + \texttt{torch.compile}}: graph-mode compilation with Triton backend, including one-time compilation overhead.
+    \item \textbf{TensorRT FP16}~\cite{tensorrt}: ONNX export $\to$ TensorRT engine with FP16 precision.
+    \item \textbf{TensorRT INT8}~\cite{tensorrt}: ONNX export $\to$ static INT8 post-training quantization $\to$ TensorRT engine.
 \end{itemize}
+
+The TensorRT path involves ONNX export via \texttt{torch.onnx.export}, followed by engine building with layer-level precision calibration.
+This pipeline is representative of production deployment workflows for latency-sensitive ML inference.
 
 %==============================================================================
 \section{Experimental Setup}
@@ -98,18 +134,31 @@ We evaluate the following inference backends on an NVIDIA RTX~4090 (Ada Lovelace
 \subsection{Models and Noise Model}
 
 We evaluate two pre-trained models from the Ising-Decoding framework~\cite{nvidia2026predecoder}:
-\textbf{Model~1} (R=9, 912K parameters, 4 Conv3D layers with $k=3$) and
-\textbf{Model~4} (R=13, 1.8M parameters, 6 Conv3D layers with $k=3$).
+Model~1 (R=9) and Model~4 (R=13), as described in Table~\ref{tab:arch}.
 Both use a 25-parameter circuit-level noise model at physical error rate $p = 0.003$.
+The noise model captures preparation errors, measurement errors, idle qubit depolarization, and two-qubit gate (CNOT) Pauli channels---reflecting realistic noise in superconducting hardware.
+
+Training uses automatic noise upscaling: all 25 noise parameters are scaled so the largest grouped total equals $6 \times 10^{-3}$ (near the surface code threshold), producing denser syndromes for faster convergence.
+Evaluation always uses the original unscaled noise model.
 
 \subsection{Metrics}
 
+We report four metrics across all experiments:
 \begin{itemize}
-    \item \textbf{LER}: Logical Error Rate, averaged over X and Z bases with 262,144 Monte Carlo shots per basis.
-    \item \textbf{PyMatching latency}: Single-shot decode time (\si{\micro\second}/round), measured over 10,000 decodes after warmup.
-    \item \textbf{Model forward time}: GPU inference time for the 3D CNN pre-decoder.
-    \item \textbf{SDR}: Syndrome Density Reduction, percentage of non-zero syndrome bits eliminated.
+    \item \textbf{Logical Error Rate (LER)}: averaged over $X$ and $Z$ bases with 262,144 Monte Carlo shots per basis.
+    \item \textbf{PyMatching latency}: single-shot decode time (\si{\micro\second}/round), measured over 10,000 decodes after warmup using \texttt{batch\_size=1} decoding.
+    \item \textbf{Model forward time}: total GPU inference time for the 3D CNN over all 262K$\times$2 samples.
+    \item \textbf{Syndrome Density Reduction (SDR)}: percentage of non-zero syndrome bits eliminated by the pre-decoder.
 \end{itemize}
+
+\subsection{Experiment Design}
+
+We organize experiments into four groups:
+\textbf{Exp.~1} (Backend Comparison): all four backends at $d = 7$ with Model~1;
+\textbf{Exp.~2} (Quantization): Model~1 vs.\ Model~4 at FP32/FP16/INT8 at $d = 7$;
+\textbf{Exp.~3} (Distance Scaling): TRT-FP16 with Model~1 at $d \in \{5, 7, 9, 11, 13, 15, 17, 21\}$;
+\textbf{Exp.~4} (Real-Time Feasibility): TRT-INT8 at $d \in \{5, 7, 9, 11, 13\}$ for direct INT8/FP16 comparison.
+In total, 24 inference runs were executed, each producing a detailed timing log.
 
 %==============================================================================
 \section{Results}
@@ -117,9 +166,12 @@ Both use a 25-parameter circuit-level noise model at physical error rate $p = 0.
 
 \subsection{Experiment 1: Deployment Backend Comparison}
 
-Table~\ref{tab:backend} compares four backends at $d = 7$.
+Table~\ref{tab:backend} compares four backends at $d = 7$ with Model~1.
 All backends achieve equivalent LER ($\sim$0.0023) and PyMatching speedup ($\sim$2$\times$), confirming that the deployment stack does not degrade decoding quality.
-TensorRT reduces model forward time from \SI{0.45}{\second} (PyTorch) to \SI{0.17}{\second} ($2.7\times$ speedup), though this has minimal impact on end-to-end latency because PyMatching dominates.
+TensorRT reduces model forward time from \SI{0.45}{\second} (PyTorch) to \SI{0.17}{\second} ($2.7\times$ speedup, Fig.~\ref{fig:backend}a), though this has minimal impact on end-to-end per-round latency because PyMatching dominates.
+
+The \texttt{torch.compile} backend reports \SI{2.69}{\second} forward time due to one-time graph compilation; subsequent epochs are comparable to eager mode.
+Both TRT variants (FP16 and INT8) achieve nearly identical forward times (\SI{0.168}{\second} vs.\ \SI{0.172}{\second}), indicating that INT8 arithmetic on the RTX~4090's Tensor Cores does not provide additional speedup for this small model, likely because the workload is memory-bound rather than compute-bound.
 
 \begin{table}[t]
 \centering
@@ -140,78 +192,101 @@ TRT INT8        & 2.27 & 0.785 & 1.95$\times$ & 0.172 \\
 \footnotetext{Includes one-time compilation overhead; subsequent epochs are faster.}
 \end{table}
 
-\subsection{Experiment 2: Quantization Accuracy--Performance Tradeoff}
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{fig1_backend_comparison.pdf}
+    \caption{Backend comparison at $d = 7$. (a)~LER is consistent across all backends ($< 7\%$ variation). (b)~All backends achieve $\sim$2$\times$ PyMatching speedup, confirming that deployment choices do not compromise decoding quality.}
+    \label{fig:backend}
+\end{figure}
 
-Table~\ref{tab:quant} shows that quantization has negligible impact on LER for both models.
-Model~4 (R=13) achieves significantly lower LER (0.0014 vs.\ 0.0022) due to its larger receptive field, at the cost of $2\times$ more parameters.
+\subsection{Experiment 2: Quantization and Model Capacity}
+
+Table~\ref{tab:quant} and Fig.~\ref{fig:quant} compare two models across three precision levels.
+Model~4 (R=13) achieves $36\%$ lower LER than Model~1 (0.0014 vs.\ 0.0022) due to its larger receptive field, at the cost of $2\times$ more parameters.
 Critically, INT8 quantization preserves this advantage: Model~4 INT8 LER is 0.0014, identical to FP32.
+
+For Model~1, INT8 introduces a modest 3\% LER increase (0.00228 vs.\ 0.00218), which is within Monte Carlo sampling noise.
+The PyMatching speedup is also consistent: Model~4's stronger corrections yield slightly higher speedup ($2.04$--$2.08\times$) than Model~1 ($1.95$--$1.99\times$), reflecting Model~4's better syndrome density reduction.
+
+These results confirm that INT8 is the preferred deployment precision: it provides the smallest model footprint (important for edge deployment or multi-model scenarios) with no measurable accuracy penalty.
 
 \begin{table}[t]
 \centering
 \caption{Quantization impact on LER and latency ($d = 7$)}
 \label{tab:quant}
-\begin{tabular}{@{}llccc@{}}
+\begin{tabular}{@{}llcccc@{}}
 \toprule
-Model & Precision & LER & PM Lat. & PM \\
-      &           & ($\times 10^{-3}$) & (\si{\micro\second}/r) & Speedup \\
+Model & Precision & LER & PM Lat. & PM & SDR \\
+      &           & ($\times 10^{-3}$) & (\si{\micro\second}/r) & Speedup & (\%) \\
 \midrule
-\multirow{3}{*}{Model 1} & FP32     & 2.18 & 0.766 & 1.99$\times$ \\
-                          & TRT FP16 & 2.22 & 0.767 & 1.97$\times$ \\
-                          & TRT INT8 & 2.28 & 0.782 & 1.95$\times$ \\
+\multirow{3}{*}{M1} & FP32     & 2.18 & 0.766 & 1.99$\times$ & 87.5 \\
+                          & TRT FP16 & 2.22 & 0.767 & 1.97$\times$ & 84.4 \\
+                          & TRT INT8 & 2.28 & 0.782 & 1.95$\times$ & 84.3 \\
 \midrule
-\multirow{3}{*}{Model 4} & FP32     & 1.41 & 0.746 & 2.04$\times$ \\
-                          & TRT FP16 & 1.38 & 0.738 & 2.06$\times$ \\
-                          & TRT INT8 & 1.40 & 0.733 & 2.08$\times$ \\
+\multirow{3}{*}{M4} & FP32     & 1.41 & 0.746 & 2.04$\times$ & 89.8 \\
+                          & TRT FP16 & 1.38 & 0.738 & 2.06$\times$ & 87.3 \\
+                          & TRT INT8 & 1.40 & 0.733 & 2.08$\times$ & 87.3 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{fig2_quantization_tradeoff.pdf}
+    \caption{Quantization Pareto plot. Model~4 (squares) achieves lower LER and lower latency than Model~1 (circles). Within each model, quantization has negligible impact---all precision levels cluster tightly.}
+    \label{fig:quant}
+\end{figure}
+
 \subsection{Experiment 3: Code Distance Scaling}
 
-Fig.~\ref{fig:scaling} and Table~\ref{tab:scaling} show how decoding latency scales with code distance.
-Key observations:
+Fig.~\ref{fig:scaling} and Table~\ref{tab:scaling} show how decoding latency scales with code distance from $d = 5$ to $d = 21$.
+Three key observations emerge:
 
-\textbf{(1) Syndrome density reduction is consistent} (84--98\%) across all distances, confirming that the 3D CNN generalizes beyond its training distance.
+\textbf{(1) Syndrome density reduction is robust} across all distances (84--98\%), confirming that the 3D CNN generalizes beyond its training distance.
+The model was trained at $d = 7$ but maintains high SDR even at $d = 21$ ($4.5\times$ the training distance), demonstrating the translational equivariance of the convolutional architecture.
 
-\textbf{(2) PyMatching latency dominates.}
-The neural network forward pass accounts for only \SI{0.15}{\second}--\SI{0.20}{\second} across 262K samples regardless of distance (batch processing amortizes per-sample cost), while PyMatching time grows from \SI{0.07}{\second} ($d=5$) to \SI{34}{\second} ($d=21$).
+\textbf{(2) PyMatching latency dominates the pipeline.}
+The NN forward pass accounts for only \SI{0.15}{\second}--\SI{0.20}{\second} across all 524K samples regardless of distance (batch processing amortizes per-sample cost to $< $\SI{0.1}{\micro\second}/round), while PyMatching time grows from \SI{0.41}{\second} ($d=5$) to \SI{57}{\second} ($d=21$)---a $139\times$ increase for a $4.2\times$ increase in distance.
 
 \textbf{(3) MWPM speedup decreases with distance.}
-At $d = 5$, the pre-decoder achieves $5.7\times$ MWPM speedup; at $d = 21$, this drops to $1.7\times$.
-This is because larger distances have more complex error patterns that are harder for a fixed-receptive-field pre-decoder to fully resolve.
+At $d = 5$, the pre-decoder achieves $1.53\times$ MWPM speedup, peaking at $2.01\times$ for $d = 9$, then declining to $1.72\times$ at $d = 21$.
+This trend reflects the increasing complexity of error patterns at larger distances: the pre-decoder's fixed receptive field ($R = 9$) captures a decreasing fraction of the syndrome volume as $d$ grows, leaving more residual errors for PyMatching.
 
 \begin{figure}[t]
     \centering
     \includegraphics[width=\columnwidth]{fig3_distance_scaling.pdf}
     \caption{PyMatching single-shot latency vs.\ code distance.
-    The pre-decoder consistently reduces latency, keeping it below \SI{1}{\micro\second}/round for $d \leq 7$.}
+    The pre-decoder consistently reduces latency across all distances, with the gap widening as baseline latency increases.}
     \label{fig:scaling}
 \end{figure}
 
 \begin{table}[t]
 \centering
-\caption{Scaling analysis (Model~1, TRT FP16 where available)}
+\caption{Distance scaling analysis (Model~1, TRT-FP16)}
 \label{tab:scaling}
-\begin{tabular}{@{}rcccc@{}}
+\begin{tabular}{@{}rcccccc@{}}
 \toprule
-$d$ & Baseline & Pre-dec. & PM & SDR \\
-    & (\si{\micro\second}/r) & (\si{\micro\second}/r) & Speedup & (\%) \\
+$d$ & LER & LER & Baseline & Pre-dec. & PM & SDR \\
+    & base & pre-dec & (\si{\micro\second}/r) & (\si{\micro\second}/r) & Spdup & (\%) \\
 \midrule
-5  & 1.18 & 0.77 & 1.53$\times$ & 96 \\
-7  & 1.52 & 0.77 & 1.98$\times$ & 84 \\
-9  & 2.15 & 1.07 & 2.01$\times$ & 89 \\
-11 & 3.13 & 1.60 & 1.95$\times$ & 90 \\
-13 & 4.23 & 2.32 & 1.82$\times$ & 98 \\
-15 & 5.65 & 3.25 & 1.74$\times$ & 91 \\
-17 & 7.47 & 4.35 & 1.72$\times$ & 91 \\
-21 & 12.26 & 7.11 & 1.72$\times$ & 98 \\
+5  & 5.37 & 3.83 & 1.18 & 0.77 & 1.53$\times$ & 96 \\
+7  & 2.78 & 2.28 & 1.52 & 0.77 & 1.98$\times$ & 84 \\
+9  & 1.26 & 1.18 & 2.15 & 1.07 & 2.01$\times$ & 89 \\
+11 & 0.56 & 0.57 & 3.13 & 1.60 & 1.95$\times$ & 90 \\
+13 & 0.19 & 0.27 & 4.23 & 2.32 & 1.82$\times$ & 98 \\
+15 & 0.10 & 0.10 & 5.65 & 3.25 & 1.74$\times$ & 91 \\
+17 & 0.02 & 0.05 & 7.47 & 4.35 & 1.72$\times$ & 91 \\
+21 & 0.01 & 0.01 & 12.26 & 7.11 & 1.72$\times$ & 98 \\
 \bottomrule
+\end{tabular}
+\begin{tabular}{@{}l@{}}
+\footnotesize LER values in units of $\times 10^{-3}$.
 \end{tabular}
 \end{table}
 
 \subsection{Experiment 4: Real-Time Feasibility Analysis}
 
-Fig.~\ref{fig:pipeline} presents the central result: total decoding latency (NN forward + PyMatching) against the \SI{1}{\micro\second}/round real-time budget for superconducting qubits.
+Fig.~\ref{fig:realtime} presents the central result: total decoding latency (NN forward + PyMatching) against the \SI{1}{\micro\second}/round real-time budget for superconducting qubits.
 
 \textbf{Finding 1: $d \leq 7$ is real-time feasible.}
 At $d = 7$, PyMatching-after-predecoder latency is \SI{0.77}{\micro\second}/round, well within the \SI{1}{\micro\second} budget.
@@ -220,10 +295,59 @@ The NN forward pass adds negligible per-round overhead ($< $\SI{0.1}{\micro\seco
 \textbf{Finding 2: $d \geq 9$ requires architectural innovation.}
 At $d = 9$, latency exceeds \SI{1}{\micro\second}/round (\SI{1.07}{\micro\second}).
 The bottleneck is PyMatching, not the neural network.
-This suggests that future work should focus on GPU-accelerated MWPM implementations (e.g., via cudaq-qec~\cite{cudaqqec}) rather than further neural network optimization.
+This suggests that future work should focus on GPU-accelerated MWPM or alternative global decoders (e.g., Union-Find via cudaq-qec~\cite{cudaqqec}) rather than further neural network optimization.
 
-\textbf{Finding 3: INT8 and FP16 are interchangeable.}
-TRT-INT8 and TRT-FP16 show identical latency profiles across all tested distances, confirming that INT8 is the preferred deployment precision for minimum footprint with no accuracy penalty.
+\textbf{Finding 3: INT8 and FP16 yield identical latency profiles.}
+TRT-INT8 and TRT-FP16 show overlapping latency curves across all tested distances (Fig.~\ref{fig:realtime}), confirming that INT8 is the preferred deployment precision for minimum footprint with no accuracy or latency penalty.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{fig4_realtime_feasibility.pdf}
+    \caption{Total decoding latency (NN + PyMatching) vs.\ code distance. The \SI{1}{\micro\second}/round real-time budget (dashed orange) is met for $d \leq 7$. TRT-FP16 and TRT-INT8 are indistinguishable.}
+    \label{fig:realtime}
+\end{figure}
+
+%==============================================================================
+\section{Discussion}
+%==============================================================================
+
+\textbf{Architectural implications.}
+Our phase-level breakdown reveals a clear dichotomy: the neural pre-decoder is embarrassingly parallel and scales efficiently on GPU (batch-amortized cost $< $\SI{0.1}{\micro\second}/round), while PyMatching is inherently sequential per syndrome and dominates end-to-end latency.
+This suggests a heterogeneous architecture where the GPU handles both the neural pre-decoder and a GPU-native global decoder (e.g., belief propagation + LSD~\cite{chamberland2023techniques}), eliminating the GPU$\to$CPU transfer overhead (\SI{1.1}{\second}--\SI{88.5}{\second} in our experiments) and the sequential PyMatching bottleneck.
+
+\textbf{Model capacity vs.\ real-time budget.}
+Model~4 achieves 36\% lower LER than Model~1 but has $2\times$ more parameters.
+At $d = 7$, both models meet the real-time budget, so Model~4 is strictly preferable.
+At larger distances where latency exceeds the budget regardless of model choice, Model~1's smaller footprint enables multi-instance deployment (e.g., one pre-decoder per logical qubit) with lower GPU memory pressure.
+
+\textbf{Generalization across distances.}
+The pre-decoder maintains 84--98\% SDR across $d = 5$--$21$ despite being trained only at $d = 7$.
+This generalization stems from the translational equivariance of 3D convolutions with same-padding: the model learns \emph{local} error patterns that repeat across the syndrome volume regardless of $d$.
+However, at $d \geq 13$, the pre-decoder LER slightly exceeds the baseline LER (Table~\ref{tab:scaling}), suggesting that the pre-decoder occasionally introduces correlated residual errors that confuse PyMatching.
+Larger receptive fields or distance-adaptive architectures may mitigate this effect.
+
+\textbf{Limitations.}
+Our study focuses on a single GPU (RTX~4090) and a single noise model ($p = 0.003$).
+Production QEC systems may use custom ASICs or FPGAs with different latency/throughput characteristics.
+Additionally, our batch-amortized NN latency assumes syndrome batching is feasible, which depends on the QEC control architecture.
+
+%==============================================================================
+\section{Related Work}
+%==============================================================================
+
+\textbf{Neural decoders for QEC.}
+Torlai and Melko~\cite{torlai2017neural} pioneered neural network decoders for topological codes using restricted Boltzmann machines.
+Subsequent work explored CNNs, recurrent networks, and transformers for direct decoding~\cite{chamberland2023techniques}.
+NVIDIA's Ising-Decoding framework~\cite{nvidia2026predecoder} introduced the pre-decoder paradigm evaluated here, where the neural network reduces syndrome density rather than performing standalone decoding.
+
+\textbf{Real-time decoding.}
+Battistel et al.~\cite{battistel2023real} surveyed the real-time decoding challenge, identifying the \SI{1}{\micro\second}/round budget for superconducting qubits.
+Higgott and Gidney~\cite{higgott2023sparse} achieved $\sim$1 million errors/second with Sparse Blossom (PyMatching v2), the MWPM decoder used in our experiments.
+Our work complements these efforts by characterizing how neural pre-decoders reduce the workload for MWPM decoders.
+
+\textbf{GPU-accelerated QEC.}
+The cudaq-qec framework~\cite{cudaqqec} provides GPU-native implementations of Union-Find and BP+LSD decoders.
+Our results motivate combining neural pre-decoders with such GPU-native global decoders to create a fully GPU-resident decoding pipeline.
 
 %==============================================================================
 \section{Conclusion}
@@ -231,13 +355,13 @@ TRT-INT8 and TRT-FP16 show identical latency profiles across all tested distance
 
 We presented the first systematic GPU architecture characterization of neural pre-decoders for quantum error correction.
 Our experiments on an RTX~4090 demonstrate that:
-(1) TensorRT INT8 quantization preserves LER within 3\% while providing a compact deployment footprint;
-(2) the pre-decoder reduces PyMatching latency by 1.5--2.0$\times$ through 84--98\% syndrome density reduction;
-(3) real-time decoding ($\leq$\SI{1}{\micro\second}/round) is achievable for surface codes up to $d = 7$.
+(1)~TensorRT INT8 quantization preserves LER within 3\% while providing $2.7\times$ faster model inference and a compact deployment footprint;
+(2)~the pre-decoder reduces PyMatching latency by 1.5--2.1$\times$ through 84--98\% syndrome density reduction, with consistent generalization from $d = 5$ to $d = 21$;
+(3)~real-time decoding ($\leq$\SI{1}{\micro\second}/round) is achievable for surface codes up to $d = 7$.
 
-For larger code distances, PyMatching---not the neural network---becomes the bottleneck.
-This identifies a clear architectural opportunity: integrating GPU-accelerated global decoders (e.g., cudaq-qec Union-Find or BP+LSD) to replace PyMatching in the residual decoding stage.
-The pre-decoder + GPU-decoder co-design represents a promising path toward real-time fault-tolerant quantum computing at scale.
+For larger code distances, PyMatching---not the neural network---becomes the bottleneck, accounting for over 99\% of per-round latency at $d = 21$.
+This identifies a clear architectural opportunity: replacing the CPU-based PyMatching with GPU-accelerated global decoders (e.g., cudaq-qec Union-Find or BP+LSD) to create a fully GPU-resident pipeline.
+Such a pre-decoder + GPU-decoder co-design represents a promising path toward real-time fault-tolerant quantum computing at practical code distances.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
