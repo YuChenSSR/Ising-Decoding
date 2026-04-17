@@ -1,0 +1,91 @@
+Loading model for task: inference
+Loading model from: /home/chengyu/Ising-Decoding/models/Ising-Decoder-SurfaceCode-1-Fast.pt
+Model loaded (912,772 parameters)
+[Inference] Starting Stim evaluation (may take a bit). Shots per basis: 262,144 (sharded across 1 GPU(s)); latency timing subset: 10,000 single-shot decodes.
+[LER Config] ONNX_WORKFLOW=torch-only | torch.compile=on | channels_last_3d=on | prefetcher=on | timing=on
+
+[Phase Timing] Breakdown across 128 batches:
+  Data generation:       33.774s
+  Model forward:         15.154s
+  Residual construction: 0.000s
+  GPU→CPU transfer:      88.515s
+  PyMatching baseline:   56.997s
+  PyMatching predecoder: 34.292s
+  Post-decode logic:     0.036s
+
+[PyMatching Timing] Decoder Input Info:
+  Detector array shape: (2048, 9240) (batch_size, num_detectors)
+  Total samples decoded: 262144
+  Number of batches: 128 (across 1 GPU(s))
+
+[PyMatching Timing] Syndrome Density:
+  Baseline (no pre-decoder): 0.051873 (5.1873% non-zero)
+  After pre-decoder:         0.001101 (0.1101% non-zero)
+  Density reduction:         97.88%
+
+[PyMatching Timing] Decode Time (ONLY matcher.decode_batch, excludes GPU→CPU transfer):
+  n_rounds per sample: 21
+  Total rounds decoded: 5,505,024
+  Floor (zero density):      0.000 µs/round (fixed overhead)
+  Baseline (no pre-decoder): 56996.70 ms total, 10.354 µs/round
+  After pre-decoder:         34291.69 ms total, 6.229 µs/round
+
+[PyMatching Timing] Breakdown (time above floor = density-dependent MWPM work):
+  Baseline above floor:      10.354 µs/round
+  Pre-decoder above floor:   6.229 µs/round
+  MWPM-only speedup:         1.66x (density-dependent portion)
+
+  Total speedup:             1.6621x (39.84% faster)
+
+[PyMatching Timing] Per-Batch Variability (µs/round):
+  Pre-decoder:  min=5.895, max=6.477, std=0.128, range=0.581
+[DEM Timing] build=0.19s decode=91.29s (basis=X, batches=128)
+[LER Config] ONNX_WORKFLOW=torch-only | torch.compile=on | channels_last_3d=on | prefetcher=on | timing=on
+
+[Phase Timing] Breakdown across 128 batches:
+  Data generation:       35.508s
+  Model forward:         0.260s
+  Residual construction: 0.000s
+  GPU→CPU transfer:      89.057s
+  PyMatching baseline:   58.298s
+  PyMatching predecoder: 34.095s
+  Post-decode logic:     0.035s
+
+[PyMatching Timing] Decoder Input Info:
+  Detector array shape: (2048, 9240) (batch_size, num_detectors)
+  Total samples decoded: 262144
+  Number of batches: 128 (across 1 GPU(s))
+
+[PyMatching Timing] Syndrome Density:
+  Baseline (no pre-decoder): 0.051883 (5.1883% non-zero)
+  After pre-decoder:         0.001106 (0.1106% non-zero)
+  Density reduction:         97.87%
+
+[PyMatching Timing] Decode Time (ONLY matcher.decode_batch, excludes GPU→CPU transfer):
+  n_rounds per sample: 21
+  Total rounds decoded: 5,505,024
+  Floor (zero density):      0.000 µs/round (fixed overhead)
+  Baseline (no pre-decoder): 58298.37 ms total, 10.590 µs/round
+  After pre-decoder:         34095.37 ms total, 6.194 µs/round
+
+[PyMatching Timing] Breakdown (time above floor = density-dependent MWPM work):
+  Baseline above floor:      10.590 µs/round
+  Pre-decoder above floor:   6.194 µs/round
+  MWPM-only speedup:         1.71x (density-dependent portion)
+
+  Total speedup:             1.7099x (41.52% faster)
+
+[PyMatching Timing] Per-Batch Variability (µs/round):
+  Pre-decoder:  min=5.887, max=6.545, std=0.117, range=0.658
+[DEM Timing] build=0.21s decode=92.39s (basis=Z, batches=128)
+
+[Inference] d=21, n_rounds=21, noise_model=25p
+[Inference] Using explicit noise_model (25p): NoiseModel(prep=[X:0.0020, Z:0.0020], meas=[X:0.0020, Z:0.0020], idle_cnot=[X:0.0010, Y:0.0010, Z:0.0010], idle_spam=[X:0.0020, Y:0.0020, Z:0.0020], cnot_total=0.0030)
+                                           No pre-decoder  After pre-decoder
+  PyMatching latency - X basis (µs/round):         12.100              7.127
+  PyMatching latency - Z basis (µs/round):         12.421              7.097
+  PyMatching latency - Avg (µs/round):             12.261              7.112
+  LER - X basis:                                 0.000008           0.000000
+  LER - Z basis:                                 0.000008           0.000019
+  LER - Avg:                                     0.000008           0.000010
+  PyMatching speedup (Avg X/Z):                     1.724x

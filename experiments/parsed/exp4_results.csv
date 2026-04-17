@@ -1,0 +1,6 @@
+file,ler_baseline,ler_predecoder,pm_latency_baseline_us,pm_latency_predecoder_us,pm_speedup,model_forward_s,pm_baseline_total_s,pm_predecoder_total_s,gpu_cpu_transfer_s,data_gen_s,syndrome_density_reduction_pct,total_rounds,onnx_workflow,model_params
+exp4_trt_int8_d11.log,0.000549,0.000595,3.11,1.6,1.944,0.157,6.675,3.082,13.686,1.972,89.79,2883584,export+TRT,912772
+exp4_trt_int8_d13.log,,,,,,,,,,,,,export+TRT,912772
+exp4_trt_int8_d5.log,,,,,,0.156,0.411,0.072,1.237,0.526,84.63,1310720,export+TRT,912772
+exp4_trt_int8_d7.log,0.002771,0.002382,1.531,0.774,1.979,0.167,1.424,0.416,3.457,0.692,84.28,1835008,export+TRT,912772
+exp4_trt_int8_d9.log,0.00128,0.001253,2.129,1.048,2.031,0.159,3.377,1.302,7.462,1.159,88.9,2359296,export+TRT,912772
